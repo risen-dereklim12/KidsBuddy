@@ -197,6 +197,45 @@ def generate_mock_response(user_input: str) -> Tuple[str, str]:
         return "Did you know that honey never spoils? You could eat honey that is 3,000 years old! 🍯🐝", "happy"
     return "Hi there, friend! I'm Buddy. Let's talk about space, science, or play a game! 🦕✨", "speaking"
 
+def is_quota_or_billing_error(e: Exception) -> bool:
+    """
+    Checks if the exception indicates a quota/token run-out or billing error
+    across various API providers (OpenAI, Anthropic, Gemini, Deepseek).
+    """
+    err_str = str(e).lower()
+    
+    # Check for specific status codes (e.g., 429 Too Many Requests/Quota, 402 Payment Required)
+    status_code = None
+    if hasattr(e, "status_code"):
+        status_code = getattr(e, "status_code")
+    elif hasattr(e, "code"):
+        val = getattr(e, "code")
+        if isinstance(val, int):
+            status_code = val
+            
+    if status_code in (402, 429):
+        return True
+        
+    # Check key phrases in the error message
+    quota_phrases = [
+        "quota", 
+        "billing", 
+        "insufficient funds", 
+        "insufficient_funds", 
+        "credit", 
+        "payment required", 
+        "too many requests", 
+        "rate limit", 
+        "limit exceeded",
+        "resource exhausted", 
+        "resource_exhausted",
+        "exhausted", 
+        "tokens exceeded",
+        "insufficient_quota"
+    ]
+    
+    return any(phrase in err_str for phrase in quota_phrases)
+
 async def get_llm_response(messages: List[Dict[str, str]]) -> Tuple[str, str]:
     """
     Unified entry point to get LLM response.
@@ -225,7 +264,13 @@ async def get_llm_response(messages: List[Dict[str, str]]) -> Tuple[str, str]:
         elif provider == "ollama":
             return await call_ollama(messages)
     except Exception as e:
-        logger.error(f"Error calling provider {provider}: {e}. Falling back to mock generator.")
+        logger.error(f"Error calling provider {provider}: {e}")
+        if is_quota_or_billing_error(e):
+            return (
+                "Oh oh! 🦕 My dino energy tokens have run out! Could you please ask your parents to check my API keys or top up the tokens so I can keep chatting and playing with you? 🦖✨",
+                "idle"
+            )
+        logger.info("Falling back to mock generator.")
         return generate_mock_response(user_message)
 
     return generate_mock_response(user_message)
