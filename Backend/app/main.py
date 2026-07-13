@@ -10,12 +10,20 @@ from app.guardrails import check_input_safety
 from app.services.llm import get_llm_response
 
 def log_chat_interaction(sender: str, text: str):
-    """Logs chat interactions to standard console out and a local file."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Logs chat interactions to standard console out and a dated log file in the logs folder."""
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"{timestamp} | {sender} | {text}"
     print(log_line)
     try:
-        log_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chat_interactions.log")
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        logs_dir = os.path.join(backend_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        date_str = now.strftime("%Y%m%d")
+        log_filename = f"chat_interactions_{date_str}.log"
+        log_file_path = os.path.join(logs_dir, log_filename)
+        
         with open(log_file_path, "a", encoding="utf-8") as f:
             f.write(log_line + "\n")
     except Exception:
