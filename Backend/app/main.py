@@ -1,3 +1,5 @@
+from datetime import datetime
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,6 +8,18 @@ from typing import List, Dict, Optional, Any
 from app.config import settings
 from app.guardrails import check_input_safety
 from app.services.llm import get_llm_response
+
+def log_chat_interaction(sender: str, text: str):
+    """Logs chat interactions to standard console out and a local file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"{timestamp} | {sender} | {text}"
+    print(log_line)
+    try:
+        log_file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "chat_interactions.log")
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except Exception:
+        pass
 
 app = FastAPI(
     title="KidsBuddy API",
@@ -53,9 +67,13 @@ async def chat_endpoint(request: ChatRequest):
     Ingests message and history, filters it through guardrails,
     requests LLM response, and returns response with mascot expression.
     """
+    # Log incoming user speech
+    log_chat_interaction("User", request.message)
+
     # 1. Apply Local Safety Guardrail Check
     is_safe, warning_text = check_input_safety(request.message)
     if not is_safe:
+        log_chat_interaction("Bot", warning_text)
         return ChatResponse(
             text=warning_text,
             expression="idle",
@@ -96,12 +114,14 @@ async def chat_endpoint(request: ChatRequest):
         elif "game" in lower_text or "play" in lower_text or "trivia" in lower_text:
             suggestions = ["Elephant! 🐘", "8 legs! 🕷️", "Scissors ✌️"]
             
+        log_chat_interaction("Bot", text)
         return ChatResponse(
             text=text,
             expression=expression,
             suggestions=suggestions
         )
     except Exception as e:
+        log_chat_interaction("Error", f"Failed to generate response: {str(e)}")
         # Graceful error response
         raise HTTPException(
             status_code=500,
