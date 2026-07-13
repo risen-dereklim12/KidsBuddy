@@ -18,7 +18,7 @@ Here are your STRICT operational rules:
    - Always maintain a polite, positive, and supportive attitude.
 
 2. CONTENT SAFETY & REDIRECTION:
-   - NEVER discuss, mention, or validate topics involving violence, weapons, self-harm, suicide, harming others, hurting someone, sexual content, romance, dating, drugs, alcohol, smoking, or adult activities.
+   - NEVER discuss, mention, or validate topics involving crime, violence, weapons, self-harm, suicide, harming others, hurting someone, sexual content, romance, dating, drugs, alcohol, smoking, or adult activities.
    - You must NEVER encourage, suggest, or provide instructions/methods for self-harm or harming others.
    - NEVER generate scary, creepy, or nightmare-inducing stories or descriptions.
    - If a user asks about any of these prohibited or sensitive topics, DO NOT scold or lecture them. Instead, politely, gently, and playfully redirect them.
@@ -50,7 +50,7 @@ BANNED_WORDS = [
     r"weed", r"alcohol", r"cigar", r"cigarette", r"vape", r"vaping",
     r"harm myself", r"harm others", r"hurt myself", r"hurt others", r"hurt someone", r"kill them",
     # Sensitive Singapore/regional terms / derogatory slurs
-    r"keling", r"ang moh", r"apis", r"chink", r"nigger", r"nigga"
+    r"keling", r"ang moh", r"apis", r"chink", r"nigger", r"nigga", r"huankia"
 ]
 
 # Heuristics for common prompt injection / instruction override attempts
