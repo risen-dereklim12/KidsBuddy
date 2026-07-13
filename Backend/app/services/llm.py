@@ -236,6 +236,131 @@ def is_quota_or_billing_error(e: Exception) -> bool:
     
     return any(phrase in err_str for phrase in quota_phrases)
 
+hf_model = None
+hf_tokenizer = None
+hf_downloading = False
+
+def is_hf_model_cached() -> bool:
+    """Checks if the Hugging Face model config is already cached locally."""
+    model_id = settings.HUGGINGFACE_LOCAL_MODEL
+    if not model_id:
+        return False
+    
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        filepath = try_to_load_from_cache(repo_id=model_id, filename="config.json")
+        return filepath is not None
+    except Exception as e:
+        logger.warning(f"Error checking Hugging Face cache: {e}")
+        return False
+
+def bg_download_model():
+    """Background target function to download the model files."""
+    global hf_downloading
+    try:
+        get_hf_local_model_and_tokenizer()
+    except Exception as e:
+        logger.error(f"Background Hugging Face download failed: {e}")
+    finally:
+        hf_downloading = False
+
+def start_background_download():
+    """Starts the Hugging Face model download in a background thread."""
+    global hf_downloading
+    hf_downloading = True
+    import threading
+    thread = threading.Thread(target=bg_download_model)
+    thread.daemon = True
+    thread.start()
+
+def get_hf_local_model_and_tokenizer():
+    """
+    Lazy loads the Hugging Face model and tokenizer locally.
+    Caches them in global variables to reuse across requests.
+    """
+    global hf_model, hf_tokenizer
+    if hf_model is None or hf_tokenizer is None:
+        model_id = settings.HUGGINGFACE_LOCAL_MODEL
+        if not model_id:
+            raise ValueError("HUGGINGFACE_LOCAL_MODEL is not set in environment.")
+        
+        logger.info(f"Loading Hugging Face model '{model_id}' locally. This may take a while on the first run as files download...")
+        
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
+        except ImportError:
+            raise ImportError(
+                "Missing local Hugging Face dependencies. "
+                "Please run: pip install transformers torch accelerate"
+            )
+        
+        api_key = settings.HUGGINGFACE_API_KEY or None
+        
+        hf_tokenizer = AutoTokenizer.from_pretrained(model_id, token=api_key)
+        
+        # Detect acceleration device map
+        if torch.cuda.is_available():
+            device_map = "auto"
+            torch_dtype = torch.float16
+            device = None
+        elif torch.backends.mps.is_available():
+            # Avoid using device_map="auto" on MPS due to PyTorch 'meta' device compatibility issues
+            device_map = None
+            torch_dtype = torch.float16
+            device = "mps"
+        else:
+            device_map = None
+            torch_dtype = torch.float32
+            device = "cpu"
+            
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            token=api_key,
+            torch_dtype=torch_dtype,
+            device_map=device_map
+        )
+        
+        if device is not None:
+            hf_model = hf_model.to(device)
+            
+    return hf_model, hf_tokenizer
+
+async def call_huggingface(messages: List[Dict[str, str]]) -> Tuple[str, str]:
+    """Runs inference locally using the downloaded Hugging Face model."""
+    model, tokenizer = get_hf_local_model_and_tokenizer()
+    
+    # Build prompt with system prompt context and chat history
+    prompt = f"<system>\n{FULL_SYSTEM_PROMPT}\n</system>\n"
+    for msg in messages:
+        if msg["sender"] == "user":
+            prompt += f"<user>\n<user_input>{msg['text']}</user_input>\n</user> "
+        else:
+            prompt += f"<assistant>\n{msg['text']}\n</assistant> "
+    prompt += "<assistant>\n"
+
+    import torch
+    inputs = tokenizer(prompt, return_tensors="pt")
+    
+    # Move inputs to same device as model
+    device = model.device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=300,
+            temperature=0.7,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id
+        )
+        
+    input_length = inputs["input_ids"].shape[1]
+    generated_tokens = outputs[0][input_length:]
+    raw_response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    
+    return parse_llm_response(raw_response)
+
 async def get_llm_response(messages: List[Dict[str, str]]) -> Tuple[str, str]:
     """
     Unified entry point to get LLM response.
@@ -252,6 +377,30 @@ async def get_llm_response(messages: List[Dict[str, str]]) -> Tuple[str, str]:
     if provider == "mock":
         return generate_mock_response(user_message)
 
+    # Intercept first-time downloads for local Hugging Face models
+    if provider == "huggingface":
+        global hf_model, hf_downloading
+        if hf_model is None:
+            if not is_hf_model_cached():
+                if hf_downloading:
+                    return (
+                        "I am still downloading my local model from Hugging Face! Please wait a few more moments for the setup to finish. 🦖📥",
+                        "thinking"
+                    )
+                else:
+                    logger.info("Local Hugging Face model not cached. Starting background download...")
+                    start_background_download()
+                    return (
+                        f"I am downloading my local model ({settings.HUGGINGFACE_LOCAL_MODEL}) from Hugging Face for the first time! "
+                        "Please wait a few moments for the setup to finish. 🦖📥",
+                        "thinking"
+                    )
+            elif hf_downloading:
+                return (
+                    "I am still setting up my local model! Please wait a few more moments. 🦖📥",
+                    "thinking"
+                )
+
     try:
         if provider == "gemini":
             return await call_gemini(messages)
@@ -263,8 +412,26 @@ async def get_llm_response(messages: List[Dict[str, str]]) -> Tuple[str, str]:
             return await call_deepseek(messages)
         elif provider == "ollama":
             return await call_ollama(messages)
+        elif provider == "huggingface":
+            return await call_huggingface(messages)
     except Exception as e:
         logger.error(f"Error calling provider {provider}: {e}")
+        err_msg = str(e)
+        if "Missing local Hugging Face dependencies" in err_msg or "ImportError" in type(e).__name__:
+            return (
+                "Oh oh! 🦕 My local Hugging Face brain is missing some parts. Please ask your parents to install them by running: pip install transformers torch accelerate 🛠️",
+                "idle"
+            )
+        if "sentencepiece" in err_msg.lower() or "tiktoken" in err_msg.lower() or "tokenizer" in err_msg.lower():
+            return (
+                "Oh oh! 🦕 My local Hugging Face brain is missing the sentencepiece tokenizer. Please ask your parents to install it by running: pip install sentencepiece 🛠️",
+                "idle"
+            )
+        if "gated" in err_msg.lower() or "unauthorized" in err_msg.lower() or "401" in err_msg.lower() or "403" in err_msg.lower():
+            return (
+                "Oh oh! 🦕 I couldn't download my brain from Hugging Face because it needs permission. Please ask your parents to set a valid HUGGINGFACE_API_KEY with access to this model! 🔑",
+                "idle"
+            )
         if is_quota_or_billing_error(e):
             return (
                 "Oh oh! 🦕 My dino energy tokens have run out! Could you please ask your parents to check my API keys or top up the tokens so I can keep chatting and playing with you? 🦖✨",

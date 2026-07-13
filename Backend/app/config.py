@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional, Union
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -38,6 +38,19 @@ class Settings(BaseSettings):
     OLLAMA_API_BASE: str = "http://localhost:11434/v1"
     OLLAMA_MODEL: str = "llama3"
 
+    # Hugging Face Local LLM Override
+    HUGGINGFACE_LOCAL_MODEL: Optional[str] = None
+    HUGGINGFACE_API_KEY: Optional[str] = None
+
+    @model_validator(mode="after")
+    def apply_local_override(self) -> 'Settings':
+        if not self.HUGGINGFACE_API_KEY:
+            self.HUGGINGFACE_API_KEY = os.getenv("HF_API_KEY")
+            
+        if self.HUGGINGFACE_LOCAL_MODEL and self.HUGGINGFACE_LOCAL_MODEL.strip():
+            self.LLM_PROVIDER = "huggingface"
+        return self
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v):
@@ -49,7 +62,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_provider(cls, v: str) -> str:
         provider = v.strip().lower()
-        allowed = {"gemini", "openai", "claude", "deepseek", "ollama", "mock"}
+        allowed = {"gemini", "openai", "claude", "deepseek", "ollama", "huggingface", "mock"}
         if provider not in allowed:
             raise ValueError(f"LLM_PROVIDER must be one of {allowed}")
         return provider
